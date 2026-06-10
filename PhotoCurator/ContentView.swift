@@ -215,24 +215,14 @@ struct HomeView: View {
                         Color.clear.frame(height: 80)
                     }
                     .padding(.horizontal)
-                    .padding(.top, 8)
+                    .padding(.top, 4)
                 }
 
                 // 分析ボタン（下部固定）
                 analyzeButton
             }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape.fill")
-                            .foregroundStyle(Color.accent)
-                    }
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
@@ -243,6 +233,24 @@ struct HomeView: View {
 
     private var headerCard: some View {
         VStack(spacing: 16) {
+            // タイトル＋設定ボタン
+            HStack {
+                Text(lm.appTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    showingSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.body)
+                        .foregroundStyle(Color.accent)
+                        .frame(width: 32, height: 32)
+                        .background(Color(.tertiarySystemBackground))
+                        .clipShape(Circle())
+                }
+            }
+
             // 範囲セレクター
             HStack(spacing: 0) {
                 ForEach(AnalysisRange.allCases) { range in
@@ -589,6 +597,7 @@ struct GroupDetailView: View {
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .navigationTitle(lm.groupDetail)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .confirmationDialog(
             lm.s("\(assetsToDelete.count) 枚の写真を削除しますか？",
                  "Delete \(assetsToDelete.count) photos?"),
