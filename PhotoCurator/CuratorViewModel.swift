@@ -11,24 +11,47 @@ class CuratorViewModel: ObservableObject {
 
     private let groupingEngine = PhotoGroupingEngine()
     private let scorer = PhotoQualityScorer()
+    private var analysisTask: Task<Void, Never>?
 
     // MARK: - Analysis Pipeline
+
+    /// 分析を開始する（既存の分析が走っていればキャンセルしてから開始）
+    func startAnalysis(assets: [PHAsset]) {
+        analysisTask?.cancel()
+        analysisTask = Task { [weak self] in
+            await self?.analyze(assets: assets)
+        }
+    }
+
+    /// 実行中の分析をキャンセルする
+    func cancelAnalysis() {
+        analysisTask?.cancel()
+        analysisTask = nil
+        isAnalyzing = false
+        progress = 0
+    }
 
     func analyze(assets: [PHAsset]) async {
         guard !assets.isEmpty else { return }
         isAnalyzing = true
         progress = 0
-        defer { isAnalyzing = false }
+        defer {
+            isAnalyzing = false
+            analysisTask = nil
+        }
 
         // Step 1: Group similar photos
         progress = 0.1
         var rawGroups = await groupingEngine.groupAssets(assets)
+        if Task.isCancelled { return }
         progress = 0.4
 
         // Step 2: Score each group and find best asset
         var scored: [PhotoGroup] = []
         for (i, group) in rawGroups.enumerated() {
+            if Task.isCancelled { return }
             let ranks = await scorer.rankAssets(group.assets)
+            if Task.isCancelled { return }
             if let best = ranks.first,
                let bestIndex = group.assets.firstIndex(where: { $0.localIdentifier == best.asset.localIdentifier }) {
                 var updated = group
@@ -40,6 +63,8 @@ class CuratorViewModel: ObservableObject {
             }
             progress = 0.4 + 0.5 * (Double(i + 1) / Double(rawGroups.count))
         }
+
+        if Task.isCancelled { return }
 
         // Step 3: Pre-select all non-best assets for deletion
         selectedForDeletion = Set(scored.map { $0.id })

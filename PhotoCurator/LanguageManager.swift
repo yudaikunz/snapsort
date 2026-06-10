@@ -60,6 +60,7 @@ extension LanguageManager {
     var noGroups: String          { s("重複写真なし", "No Duplicates Found") }
     var noGroupsDesc: String      { s("似た写真が見つかりませんでした\n条件を変えて再分析してみてください",
                                       "No similar photos found.\nTry a different range and analyze again.") }
+    var stopAnalysis: String      { s("分析を停止", "Stop Analysis") }
 
     // MARK: GroupList
     var groupCount: String        { s("グループ", "Groups") }

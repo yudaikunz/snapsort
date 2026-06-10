@@ -326,7 +326,7 @@ struct HomeView: View {
 
     private var analyzeButton: some View {
         Button {
-            Task { await viewModel.analyze(assets: filteredAssets) }
+            viewModel.startAnalysis(assets: filteredAssets)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "wand.and.stars")
@@ -369,6 +369,18 @@ struct HomeView: View {
             Text("\(Int(viewModel.progress * 100))%")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Button(role: .destructive) {
+                viewModel.cancelAnalysis()
+            } label: {
+                Text(lm.stopAnalysis)
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.bordered)
+            .tint(Color.deleteRed)
+            .padding(.horizontal, 40)
         }
         .frame(maxWidth: .infinity)
         .padding(32)
