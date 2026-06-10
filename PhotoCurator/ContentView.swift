@@ -947,6 +947,7 @@ struct SettingsView: View {
                         noteRow(icon: "icloud.slash",                  color: .blue,   text: lm.note2)
                         noteRow(icon: "trash.slash",                   color: .red,    text: lm.note3)
                         noteRow(icon: "person.2.fill",                 color: .purple, text: lm.note4)
+                        noteRow(icon: "hand.raised.slash.fill",        color: .gray,   text: lm.note5)
                     }
                     .padding(.vertical, 4)
                 } header: {

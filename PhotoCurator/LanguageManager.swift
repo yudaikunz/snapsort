@@ -120,6 +120,8 @@ extension LanguageManager {
                            "Deleted photos are kept in iOS 'Recently Deleted' for 30 days and can be restored.") }
     var note4: String { s("顔認識・目つぶり検出は逆光・横顔・マスク着用時など条件によって精度が下がる場合があります。",
                            "Face and blink detection accuracy may decrease under backlight, side profiles, or mask-wearing conditions.") }
+    var note5: String { s("写真の削除は自己責任で行ってください。本アプリの利用により生じたいかなる損害（写真データの喪失等を含む）についても、開発者は一切の責任を負いません。",
+                           "Photo deletion is performed at your own risk. The developer shall not be liable for any damages, including loss of photo data, arising from the use of this App.") }
 
     var creditDeveloper: String  { s("開発者", "Developer") }
     var creditVersion: String    { s("バージョン", "Version") }
