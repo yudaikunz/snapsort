@@ -95,7 +95,7 @@ struct LanguageSelectionView: View {
                     Text("Snap Sort")
                         .font(.largeTitle.bold())
                         .foregroundStyle(.white)
-                    Text("by YAZAWA")
+                    Text("by YUDAIKUNZ")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -935,7 +935,7 @@ struct SettingsView: View {
                 // クレジット
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
-                        creditRow(title: lm.creditDeveloper, value: "YAZAWA")
+                        creditRow(title: lm.creditDeveloper, value: "YUDAIKUNZ")
                         Divider()
                         creditRow(title: lm.creditVersion,  value: "1.0.0")
                         Divider()

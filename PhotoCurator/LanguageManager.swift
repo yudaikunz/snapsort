@@ -47,7 +47,7 @@ class LanguageManager: ObservableObject {
 
 extension LanguageManager {
     // MARK: App
-    var appTitle: String          { s("Snap Sort by YAZAWA", "Snap Sort by YAZAWA") }
+    var appTitle: String          { s("Snap Sort by YUDAIKUNZ", "Snap Sort by YUDAIKUNZ") }
 
     // MARK: HomeView
     var rangeDay: String          { s("日", "Day") }
