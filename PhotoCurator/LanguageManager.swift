@@ -132,7 +132,7 @@ extension LanguageManager {
     var permissionTitle: String   { s("写真へのアクセスが必要です", "Photo Access Required") }
     var permissionDesc: String    { s("重複写真を検出・整理するために\nフォトライブラリへのアクセスを許可してください",
                                       "Please allow access to your photo library\nto detect and organize duplicate photos.") }
-    var permissionButton: String  { s("アクセスを許可する", "Allow Access") }
+    var permissionButton: String  { s("次へ", "Continue") }
     var deniedTitle: String       { s("アクセスが拒否されています", "Access Denied") }
     var deniedDesc: String        { s("設定アプリからフォトライブラリへの\nアクセスを許可してください",
                                       "Please allow photo library access\nin the Settings app.") }
