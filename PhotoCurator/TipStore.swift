@@ -6,9 +6,9 @@ import Combine
 // App Store Connect で登録する消耗型IAP のProduct IDと一致させてください
 
 enum TipProductID: String, CaseIterable {
-    case small  = "jp.yazawa.snapsort.tip.small"   // ¥160
-    case medium = "jp.yazawa.snapsort.tip.medium"  // ¥320
-    case large  = "jp.yazawa.snapsort.tip.large"   // ¥810
+    case small  = "com.yudaikunz.snapsort.tip.small"   // ¥160
+    case medium = "com.yudaikunz.snapsort.tip.medium"  // ¥320
+    case large  = "com.yudaikunz.snapsort.tip.large"   // ¥810
 }
 
 // MARK: - TipStore
