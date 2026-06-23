@@ -2,6 +2,13 @@ import Foundation
 import Photos
 import Combine
 
+/// スワイプ整理での各写真の判定
+enum SwipeDecision: Equatable {
+    case keep      // 残す
+    case delete    // 削除
+    case favorite  // お気に入り（残す扱い）
+}
+
 @MainActor
 class CuratorViewModel: ObservableObject {
     @Published var groups: [PhotoGroup] = []
@@ -151,6 +158,54 @@ class CuratorViewModel: ObservableObject {
         } else {
             selectedForDeletion.insert(groupID)
         }
+    }
+
+    // MARK: - Swipe Sort
+
+    /// スワイプ整理の判定をまとめて適用する。
+    /// お気に入りを反映 → 削除対象をまとめて削除 → グループを再構築 → キャッシュ更新。
+    func applySwipeDecisions(_ decisions: [String: SwipeDecision]) async {
+        // localIdentifier → PHAsset の対応表（グループ内の全アセットから）
+        var byID: [String: PHAsset] = [:]
+        for asset in groups.flatMap({ $0.assets }) where byID[asset.localIdentifier] == nil {
+            byID[asset.localIdentifier] = asset
+        }
+
+        // 1. お気に入り
+        for (id, decision) in decisions where decision == .favorite {
+            if let asset = byID[id], !FavoritesStore.shared.isFavorite(id) {
+                await FavoritesStore.shared.toggle(asset: asset)
+            }
+        }
+
+        // 2. 削除
+        let deleteIDs = Set(decisions.compactMap { $0.value == .delete ? $0.key : nil })
+        let assetsToDelete = deleteIDs.compactMap { byID[$0] }
+        if !assetsToDelete.isEmpty {
+            do {
+                try await PhotoLibraryManager.shared.deleteAssets(assetsToDelete)
+                // ライブラリ件数を最新化（ホームの「すべての写真◯枚」など）
+                await PhotoLibraryManager.shared.fetchAllPhotos()
+            } catch {
+                print("Swipe delete failed: \(error)")
+            }
+        }
+
+        // 3. グループ再構築（削除済みを除外、2枚未満は破棄、残りはすべて keep 扱い）
+        var rebuilt: [PhotoGroup] = []
+        for group in groups {
+            let remaining = group.assets.filter { !deleteIDs.contains($0.localIdentifier) }
+            guard remaining.count >= 2 else { continue }
+            var updated = group
+            let oldBestID = group.assets[group.bestAssetIndex].localIdentifier
+            updated.assets = remaining
+            updated.bestAssetIndex = remaining.firstIndex { $0.localIdentifier == oldBestID } ?? 0
+            updated.keepIndices = Set(0..<remaining.count)
+            rebuilt.append(updated)
+        }
+        groups = rebuilt
+        selectedForDeletion = selectedForDeletion.filter { id in rebuilt.contains { $0.id == id } }
+        saveCache()
     }
 
     // MARK: - Result Cache

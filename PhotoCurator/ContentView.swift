@@ -223,6 +223,8 @@ struct HomeView: View {
     @State private var tagPendingDelete: RegisteredTag? = nil
     // お気に入りフィルター
     @State private var showFavoritesOnly = false
+    // スワイプ整理
+    @State private var showSwipeSort = false
 
     private let currentYear = Calendar.current.component(.year, from: Date())
     private var yearRange: [Int] { Array((2000...currentYear).reversed()) }
@@ -294,6 +296,9 @@ struct HomeView: View {
         }
         .onAppear { favoritesStore.syncFromAssets(library.allAssets) }
         .task { await viewModel.loadCachedResults() }
+        .fullScreenCover(isPresented: $showSwipeSort) {
+            SwipeSortView(viewModel: viewModel)
+        }
         .confirmationDialog(
             tagPendingDelete.map { lm.s("タグ「\($0.name)」を削除しますか？", "Delete tag “\($0.name)”?") } ?? "",
             isPresented: Binding(
@@ -749,6 +754,17 @@ struct HomeView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            Button { showSwipeSort = true } label: {
+                Label(lm.s("スワイプで整理", "Swipe to Sort"), systemImage: "hand.draw")
+                    .font(.subheadline.bold())
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.accent.opacity(0.12))
+                    .foregroundStyle(Color.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
 
             GroupListView(viewModel: viewModel)
         }
