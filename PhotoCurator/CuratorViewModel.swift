@@ -42,7 +42,7 @@ class CuratorViewModel: ObservableObject {
 
         // Step 1: Group similar photos
         progress = 0.1
-        var rawGroups = await groupingEngine.groupAssets(assets)
+        let rawGroups = await groupingEngine.groupAssets(assets)
         if Task.isCancelled { return }
         progress = 0.4
 

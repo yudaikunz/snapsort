@@ -137,4 +137,12 @@ extension LanguageManager {
     var deniedDesc: String        { s("設定アプリからフォトライブラリへの\nアクセスを許可してください",
                                       "Please allow photo library access\nin the Settings app.") }
     var openSettings: String      { s("設定を開く", "Open Settings") }
+
+    // MARK: Tip Jar
+    var tipJarTitle: String       { s("開発者を応援する", "Support the Developer") }
+    var tipJarDesc: String        { s("このアプリが気に入ったら、コーヒー1杯分のチップをいただけると開発の励みになります ☕️",
+                                      "If you enjoy Snap Sort, a small tip helps keep development going. Thank you! ☕️") }
+    var tipThanksTitle: String    { s("ありがとうございます！", "Thank You!") }
+    var tipThanksMessage: String  { s("あなたのご支援が開発の大きな励みになります。これからもSnap Sortをよろしくお願いします！",
+                                      "Your support means a lot and keeps this app going. Thank you for your generosity!") }
 }

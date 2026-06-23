@@ -34,6 +34,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				TipProducts.storekit,
 			);
 			target = 16F4F52D2FD05D7800B0E025 /* PhotoCurator */;
 		};

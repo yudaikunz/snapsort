@@ -1,5 +1,8 @@
 import SwiftUI
 import Photos
+import PhotosUI
+import StoreKit
+import Combine
 
 // MARK: - Design Tokens
 
@@ -47,7 +50,11 @@ struct ContentView: View {
             } else {
                 switch library.authorizationStatus {
                 case .authorized, .limited:
-                    HomeView(viewModel: viewModel)
+                    if library.isLoading {
+                        LibraryLoadingView()
+                    } else {
+                        MainTabView(viewModel: viewModel)
+                    }
                 case .denied, .restricted:
                     PermissionDeniedView()
                 default:
@@ -64,6 +71,7 @@ struct ContentView: View {
                 library.checkCurrentAuthorization()
                 if library.authorizationStatus == .authorized || library.authorizationStatus == .limited {
                     await library.fetchAllPhotos()
+                    await library.fetchAllVideos()
                 }
             }
         }
@@ -159,19 +167,62 @@ struct LanguageSelectionView: View {
     }
 }
 
+// MARK: - MainTabView
+
+struct MainTabView: View {
+    @ObservedObject var viewModel: CuratorViewModel
+    @ObservedObject private var lm = LanguageManager.shared
+
+    var body: some View {
+        TabView {
+            HomeView(viewModel: viewModel)
+                .tabItem {
+                    Label(lm.s("写真整理", "Photos"), systemImage: "photo.stack.fill")
+                }
+
+            VideoFrameExtractorView()
+                .tabItem {
+                    Label(lm.s("動画抽出", "Clip"), systemImage: "film.fill")
+                }
+
+            SettingsView()
+                .tabItem {
+                    Label(lm.s("設定", "Settings"), systemImage: "gearshape.fill")
+                }
+        }
+        .tint(Color.accent)
+    }
+}
+
 // MARK: - HomeView
 
 struct HomeView: View {
     @ObservedObject var viewModel: CuratorViewModel
     @ObservedObject private var library = PhotoLibraryManager.shared
     @EnvironmentObject private var lm: LanguageManager
+    @ObservedObject private var personRegistry = PersonRegistry.shared
+    @ObservedObject private var tagRegistry = TagRegistry.shared
+    @ObservedObject private var favoritesStore = FavoritesStore.shared
     @State private var selectedRange: AnalysisRange = .all
-    @State private var showingSettings = false
     @State private var selectedDate: Date = Date()
     @State private var selectedMonthYear: Int = Calendar.current.component(.year, from: Date())
     @State private var selectedMonth: Int = Calendar.current.component(.month, from: Date())
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
     @State private var selectedDay: Int = Calendar.current.component(.day, from: Date())
+    // 人物フィルター
+    @State private var selectedPersonID: UUID? = nil
+    @State private var showPersonFilter = false
+    @State private var showAddPersonAlert = false
+    @State private var newPersonName = ""
+    // タグフィルター
+    @State private var selectedTagID: UUID? = nil
+    @State private var showTagFilter = false
+    @State private var showAddTagAlert = false
+    @State private var newTagName = ""
+    @State private var newTagColorIndex = 0
+    @State private var tagPendingDelete: RegisteredTag? = nil
+    // お気に入りフィルター
+    @State private var showFavoritesOnly = false
 
     private let currentYear = Calendar.current.component(.year, from: Date())
     private var yearRange: [Int] { Array((2000...currentYear).reversed()) }
@@ -179,7 +230,7 @@ struct HomeView: View {
 
     var filteredAssets: [PHAsset] {
         let calendar = Calendar.current
-        return library.allAssets.filter { asset in
+        var assets = library.allAssets.filter { asset in
             guard let date = asset.creationDate else { return selectedRange == .all }
             switch selectedRange {
             case .day:
@@ -193,6 +244,23 @@ struct HomeView: View {
             case .all:   return true
             }
         }
+        // 人物フィルター
+        if let personID = selectedPersonID,
+           let person = personRegistry.persons.first(where: { $0.id == personID }) {
+            let ids = Set(person.photoIDs)
+            assets = assets.filter { ids.contains($0.localIdentifier) }
+        }
+        // お気に入りフィルター
+        if showFavoritesOnly {
+            assets = assets.filter { favoritesStore.isFavorite($0.localIdentifier) }
+        }
+        // タグフィルター
+        if let tagID = selectedTagID,
+           let tag = tagRegistry.tags.first(where: { $0.id == tagID }) {
+            let ids = Set(tag.photoIDs)
+            assets = assets.filter { ids.contains($0.localIdentifier) }
+        }
+        return assets
     }
 
     var body: some View {
@@ -223,9 +291,27 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
+        }
+        .onAppear { favoritesStore.syncFromAssets(library.allAssets) }
+        .confirmationDialog(
+            tagPendingDelete.map { lm.s("タグ「\($0.name)」を削除しますか？", "Delete tag “\($0.name)”?") } ?? "",
+            isPresented: Binding(
+                get: { tagPendingDelete != nil },
+                set: { if !$0 { tagPendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(lm.s("削除", "Delete"), role: .destructive) {
+                if let tag = tagPendingDelete {
+                    if selectedTagID == tag.id { selectedTagID = nil }
+                    tagRegistry.deleteTag(id: tag.id)
+                }
+                tagPendingDelete = nil
             }
+            Button(lm.s("キャンセル", "Cancel"), role: .cancel) { tagPendingDelete = nil }
+        } message: {
+            Text(lm.s("写真は削除されません。写真アプリのアルバム（まとめ）も削除されます。",
+                      "Your photos will not be deleted. The matching album in the Photos app will also be removed."))
         }
     }
 
@@ -235,20 +321,10 @@ struct HomeView: View {
         VStack(spacing: 16) {
             // タイトル＋設定ボタン
             HStack {
-                Text(lm.appTitle)
+                Text(lm.s("写真整理", "Photos"))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button {
-                    showingSettings = true
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.body)
-                        .foregroundStyle(Color.accent)
-                        .frame(width: 32, height: 32)
-                        .background(Color(.tertiarySystemBackground))
-                        .clipShape(Circle())
-                }
             }
 
             // 範囲セレクター
@@ -278,16 +354,247 @@ struct HomeView: View {
 
             // 日付指定UI
             dateSelectorView
+
+            // 人物フィルター
+            Divider()
+            personFilterSection
+            // お気に入りフィルター
+            Divider()
+            favoritesFilterSection
+            // タグフィルター
+            Divider()
+            tagFilterSection
         }
         .padding(16)
         .background(Color.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+        .alert(lm.s("人物を追加", "Add Person"), isPresented: $showAddPersonAlert) {
+            TextField(lm.s("名前を入力", "Enter name"), text: $newPersonName)
+            Button(lm.s("追加", "Add")) {
+                let name = newPersonName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty { personRegistry.addPerson(name: name) }
+                newPersonName = ""
+            }
+            Button(lm.s("キャンセル", "Cancel"), role: .cancel) { newPersonName = "" }
+        }
+        .alert(lm.s("タグを追加", "Add Tag"), isPresented: $showAddTagAlert) {
+            TextField(lm.s("タグ名を入力", "Enter tag name"), text: $newTagName)
+            Button(lm.s("追加", "Add")) {
+                let name = newTagName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty { tagRegistry.addTag(name: name, colorIndex: newTagColorIndex) }
+                newTagName = ""
+            }
+            Button(lm.s("キャンセル", "Cancel"), role: .cancel) { newTagName = "" }
+        }
+    }
+
+    // MARK: - Person Filter
+
+    private var personFilterSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // トグルボタン
+            Button {
+                withAnimation(.spring(response: 0.3)) {
+                    showPersonFilter.toggle()
+                    if !showPersonFilter { selectedPersonID = nil }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: selectedPersonID != nil ? "person.fill" : "person")
+                        .font(.caption.bold())
+                    if let id = selectedPersonID,
+                       let name = personRegistry.persons.first(where: { $0.id == id })?.name {
+                        Text(name)
+                            .font(.caption.bold())
+                    } else {
+                        Text(lm.s("人物フィルター", "Person Filter"))
+                            .font(.caption.bold())
+                    }
+                    Spacer()
+                    if selectedPersonID != nil {
+                        Circle().fill(Color.accent).frame(width: 8, height: 8)
+                    }
+                    Image(systemName: showPersonFilter ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+                .foregroundStyle(showPersonFilter || selectedPersonID != nil ? Color.accent : .secondary)
+            }
+            .buttonStyle(.plain)
+
+            if showPersonFilter {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        if personRegistry.persons.isEmpty {
+                            Label(
+                                lm.s("写真を長押しして人物を登録", "Long-press a photo to register people"),
+                                systemImage: "person.badge.plus"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(personRegistry.persons) { person in
+                                let isSelected = selectedPersonID == person.id
+                                Button {
+                                    withAnimation(.spring(response: 0.2)) {
+                                        selectedPersonID = isSelected ? nil : person.id
+                                    }
+                                } label: {
+                                    Label(person.name, systemImage: "person.fill")
+                                        .font(.caption.bold())
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(isSelected ? Color.accent : Color(.tertiarySystemBackground))
+                                        .foregroundStyle(isSelected ? .white : .primary)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        if selectedPersonID == person.id { selectedPersonID = nil }
+                                        personRegistry.deletePerson(id: person.id)
+                                    } label: {
+                                        Label(lm.s("削除", "Delete"), systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+
+                        // 追加ボタン
+                        Button { showAddPersonAlert = true } label: {
+                            Label(lm.s("追加", "Add"), systemImage: "plus")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.tertiarySystemBackground))
+                                .foregroundStyle(Color.accent)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Favorites Filter
+
+    private var favoritesFilterSection: some View {
+        Button {
+            withAnimation(.spring(response: 0.3)) {
+                showFavoritesOnly.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
+                    .font(.caption.bold())
+                    .foregroundStyle(showFavoritesOnly ? Color.pink : .secondary)
+                Text(lm.s("お気に入りのみ", "Favorites Only"))
+                    .font(.caption.bold())
+                    .foregroundStyle(showFavoritesOnly ? Color.pink : .secondary)
+                Spacer()
+                if showFavoritesOnly {
+                    Circle().fill(Color.pink).frame(width: 8, height: 8)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Tag Filter
+
+    private var tagFilterSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.spring(response: 0.3)) {
+                    showTagFilter.toggle()
+                    if !showTagFilter { selectedTagID = nil }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: selectedTagID != nil ? "tag.fill" : "tag")
+                        .font(.caption.bold())
+                    if let id = selectedTagID,
+                       let name = tagRegistry.tags.first(where: { $0.id == id })?.name {
+                        Text(name)
+                            .font(.caption.bold())
+                    } else {
+                        Text(lm.s("タグフィルター", "Tag Filter"))
+                            .font(.caption.bold())
+                    }
+                    Spacer()
+                    if selectedTagID != nil {
+                        Circle().fill(Color.accent).frame(width: 8, height: 8)
+                    }
+                    Image(systemName: showTagFilter ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+                .foregroundStyle(showTagFilter || selectedTagID != nil ? Color.accent : .secondary)
+            }
+            .buttonStyle(.plain)
+
+            if showTagFilter {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        if tagRegistry.tags.isEmpty {
+                            Label(
+                                lm.s("写真を長押ししてタグを作成", "Long-press a photo to create tags"),
+                                systemImage: "tag.badge.plus"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(tagRegistry.tags) { tag in
+                                let isSelected = selectedTagID == tag.id
+                                Button {
+                                    withAnimation(.spring(response: 0.2)) {
+                                        selectedTagID = isSelected ? nil : tag.id
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(Color.tagColor(tag.colorIndex))
+                                            .frame(width: 8, height: 8)
+                                        Text(tag.name)
+                                            .font(.caption.bold())
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(isSelected ? Color.tagColor(tag.colorIndex) : Color(.tertiarySystemBackground))
+                                    .foregroundStyle(isSelected ? .white : .primary)
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        tagPendingDelete = tag
+                                    } label: {
+                                        Label(lm.s("削除", "Delete"), systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+
+                        // 追加ボタン
+                        Button { showAddTagAlert = true } label: {
+                            Label(lm.s("追加", "Add"), systemImage: "plus")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.tertiarySystemBackground))
+                                .foregroundStyle(Color.accent)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
     }
 
     private var maxDayInMonth: Int {
         let calendar = Calendar.current
-        var components = DateComponents(year: selectedMonthYear, month: selectedMonth)
+        let components = DateComponents(year: selectedMonthYear, month: selectedMonth)
         let date = calendar.date(from: components) ?? Date()
         return calendar.range(of: .day, in: .month, for: date)?.count ?? 31
     }
@@ -553,13 +860,23 @@ struct ZoomedPhoto: Identifiable {
     let index: Int
 }
 
+/// PHAsset を sheet(item:) に渡すための Identifiable ラッパー
+struct TaggableAsset: Identifiable {
+    let asset: PHAsset
+    var id: String { asset.localIdentifier }
+}
+
 struct GroupDetailView: View {
     let group: PhotoGroup
     @ObservedObject var viewModel: CuratorViewModel
     @EnvironmentObject private var lm: LanguageManager
+    @ObservedObject private var personRegistry = PersonRegistry.shared
+    @ObservedObject private var tagRegistry = TagRegistry.shared
+    @ObservedObject private var favoritesStore = FavoritesStore.shared
     @State private var keepIndices: Set<Int>
     @State private var showingDeleteConfirmation = false
     @State private var zoomedPhoto: ZoomedPhoto?
+    @State private var taggingAsset: TaggableAsset?
     @Environment(\.dismiss) private var dismiss
 
     init(group: PhotoGroup, viewModel: CuratorViewModel) {
@@ -624,6 +941,11 @@ struct GroupDetailView: View {
                 }
             }
         }
+        .sheet(item: $taggingAsset) { taggable in
+            PhotoActionsSheet(asset: taggable.asset)
+                .environmentObject(lm)
+        }
+        .onAppear { favoritesStore.syncFromAssets(group.assets) }
     }
 
     // MARK: - Sections
@@ -646,7 +968,7 @@ struct GroupDetailView: View {
             if let score = group.bestScore {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(score.recommendationReasons, id: \.self) { reason in
+                        ForEach(score.recommendationReasons(lm: lm), id: \.self) { reason in
                             Text(reason)
                                 .font(.caption.bold())
                                 .padding(.horizontal, 10)
@@ -688,8 +1010,11 @@ struct GroupDetailView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
                 ForEach(Array(group.assets.enumerated()), id: \.offset) { index, asset in
                     let isKept = keepIndices.contains(index)
-                    ZStack(alignment: .topTrailing) {
-                        // 写真タップ → 拡大
+                    let isFav = favoritesStore.isFavorite(asset.localIdentifier)
+                    let taggedPersons = personRegistry.taggedPersons(for: asset.localIdentifier)
+                    let appliedTags = tagRegistry.appliedTags(for: asset.localIdentifier)
+                    ZStack {
+                        // 写真タップ → 拡大 / 長押し → アクションシート
                         AssetThumbnailView(asset: asset, size: CGSize(width: 120, height: 120))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .overlay(
@@ -700,39 +1025,91 @@ struct GroupDetailView: View {
                             .onTapGesture {
                                 zoomedPhoto = ZoomedPhoto(asset: asset, index: index)
                             }
-
-                        // アイコンタップ → 切替
-                        Button {
-                            withAnimation(.spring(response: 0.2)) {
-                                if isKept {
-                                    keepIndices.remove(index)
-                                } else {
-                                    keepIndices.insert(index)
-                                }
+                            .onLongPressGesture {
+                                taggingAsset = TaggableAsset(asset: asset)
                             }
-                        } label: {
-                            Image(systemName: isKept ? "checkmark.circle.fill" : "trash.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(isKept ? Color.keepGreen : Color.deleteRed)
-                                .background(Circle().fill(.white).padding(3))
-                                .padding(8)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
 
-                        // AI推薦バッジ
-                        if index == group.bestAssetIndex {
-                            VStack {
+                        // オーバーレイ（ハート・残す消す・バッジ）
+                        VStack(spacing: 0) {
+                            HStack(alignment: .top) {
+                                // ハートボタン（左）
+                                Button {
+                                    Task { await favoritesStore.toggle(asset: asset) }
+                                } label: {
+                                    Image(systemName: isFav ? "heart.fill" : "heart")
+                                        .font(.title2)
+                                        .foregroundStyle(isFav ? Color.pink : .white)
+                                        .shadow(color: .black.opacity(0.4), radius: 1)
+                                        .padding(8)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
                                 Spacer()
-                                Text(lm.aiPick)
-                                    .font(.system(size: 9, weight: .bold))
-                                    .padding(.horizontal, 6)
+
+                                // 残す/消すボタン（右）
+                                Button {
+                                    withAnimation(.spring(response: 0.2)) {
+                                        if isKept { keepIndices.remove(index) }
+                                        else      { keepIndices.insert(index) }
+                                    }
+                                } label: {
+                                    Image(systemName: isKept ? "checkmark.circle.fill" : "trash.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(isKept ? Color.keepGreen : Color.deleteRed)
+                                        .background(Circle().fill(.white).padding(3))
+                                        .padding(8)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            Spacer()
+
+                            // バッジ行（下部）
+                            HStack(alignment: .bottom, spacing: 3) {
+                                // 人物バッジ（左）
+                                if !taggedPersons.isEmpty {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "person.fill")
+                                            .font(.system(size: 8, weight: .bold))
+                                        Text(taggedPersons.prefix(2).map { String($0.name.prefix(3)) }.joined(separator: "・"))
+                                            .font(.system(size: 8, weight: .bold))
+                                            .lineLimit(1)
+                                    }
+                                    .padding(.horizontal, 5)
                                     .padding(.vertical, 3)
-                                    .background(Color.accent.opacity(0.9))
+                                    .background(Color.indigo.opacity(0.88))
                                     .foregroundStyle(.white)
                                     .clipShape(Capsule())
-                                    .padding(6)
+                                }
+                                // タグカラーバッジ
+                                if !appliedTags.isEmpty {
+                                    HStack(spacing: 2) {
+                                        ForEach(appliedTags.prefix(3)) { tag in
+                                            Circle()
+                                                .fill(Color.tagColor(tag.colorIndex))
+                                                .frame(width: 7, height: 7)
+                                        }
+                                    }
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 4)
+                                    .background(Color.black.opacity(0.55))
+                                    .clipShape(Capsule())
+                                }
+                                Spacer()
+                                // AI推薦バッジ（右）
+                                if index == group.bestAssetIndex {
+                                    Text(lm.aiPick)
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color.accent.opacity(0.9))
+                                        .foregroundStyle(.white)
+                                        .clipShape(Capsule())
+                                }
                             }
+                            .padding(6)
                         }
                     }
                 }
@@ -892,12 +1269,190 @@ struct PhotoZoomPage: View {
     }
 }
 
+// MARK: - PersonManagementView
+
+struct PersonManagementView: View {
+    @ObservedObject private var personRegistry = PersonRegistry.shared
+    @ObservedObject private var lm = LanguageManager.shared
+    @State private var showImagePicker = false
+    @State private var showNameAlert = false
+    @State private var pendingPhotoID: String? = nil
+    @State private var newPersonName = ""
+
+    var body: some View {
+        List {
+            if personRegistry.persons.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "person.badge.plus")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(lm.s("右上の＋から人物を追加できます", "Tap + to add a person"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 32)
+                .listRowBackground(Color.clear)
+            } else {
+                ForEach(personRegistry.persons) { person in
+                    PersonRow(person: person)
+                }
+                .onDelete { offsets in
+                    offsets.forEach { i in
+                        personRegistry.deletePerson(id: personRegistry.persons[i].id)
+                    }
+                }
+            }
+        }
+        .navigationTitle(lm.s("人物管理", "People"))
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showImagePicker = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                EditButton()
+            }
+        }
+        .sheet(isPresented: $showImagePicker) {
+            ImagePickerForPerson { assetID in
+                pendingPhotoID = assetID
+                showNameAlert = true
+            }
+        }
+        .alert(lm.s("人物を追加", "Add Person"), isPresented: $showNameAlert) {
+            TextField(lm.s("名前を入力", "Enter name"), text: $newPersonName)
+            Button(lm.s("追加", "Add")) {
+                let name = newPersonName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty {
+                    let person = personRegistry.addPerson(name: name)
+                    if let pid = pendingPhotoID {
+                        personRegistry.tagPhoto(assetID: pid, personID: person.id)
+                    }
+                }
+                newPersonName = ""
+                pendingPhotoID = nil
+            }
+            Button(lm.s("キャンセル", "Cancel"), role: .cancel) {
+                newPersonName = ""
+                pendingPhotoID = nil
+            }
+        } message: {
+            if let pid = pendingPhotoID {
+                Text(lm.s("選択した写真で人物を登録します", "This person will be linked to the selected photo"))
+                    .font(.caption)
+                let _ = pid // suppress warning
+            }
+        }
+    }
+}
+
+// MARK: - PersonRow
+
+struct PersonRow: View {
+    let person: RegisteredPerson
+    @State private var thumbnail: UIImage? = nil
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let img = thumbnail {
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Color(.systemGray5)
+                        .overlay {
+                            Image(systemName: "person.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .frame(width: 48, height: 48)
+            .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(person.name)
+                    .font(.body)
+                Text("\(person.photoIDs.count) 枚")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task {
+            await loadThumbnail()
+        }
+    }
+
+    private func loadThumbnail() async {
+        guard let firstID = person.photoIDs.first else { return }
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: [firstID], options: nil)
+        guard let asset = result.firstObject else { return }
+        let size = CGSize(width: 96, height: 96)
+        let opts = PHImageRequestOptions()
+        opts.deliveryMode = .opportunistic
+        opts.isNetworkAccessAllowed = true
+        opts.isSynchronous = false
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            // .opportunistic はハンドラを複数回（劣化版→最終版）呼ぶ。
+            // サムネイルは届くたびに更新しつつ、継続は最終結果で1度だけ resume する
+            // （複数回 resume するとクラッシュするため）。
+            var resumed = false
+            PHImageManager.default().requestImage(for: asset, targetSize: size, contentMode: .aspectFill, options: opts) { img, info in
+                if let img {
+                    Task { @MainActor in thumbnail = img }
+                }
+                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if degraded { return }
+                guard !resumed else { return }
+                resumed = true
+                cont.resume()
+            }
+        }
+    }
+}
+
+// MARK: - ImagePickerForPerson
+
+struct ImagePickerForPerson: UIViewControllerRepresentable {
+    let onPicked: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked) }
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onPicked: (String) -> Void
+        init(onPicked: @escaping (String) -> Void) { self.onPicked = onPicked }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            guard let id = results.first?.assetIdentifier else { return }
+            onPicked(id)
+        }
+    }
+}
+
 // MARK: - SettingsView
 
 struct SettingsView: View {
     @AppStorage("isDarkMode") private var isDarkMode = false
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var lm = LanguageManager.shared
+    @StateObject private var tipStore = TipStore.shared
 
     var body: some View {
         NavigationStack {
@@ -918,6 +1473,17 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text(lm.display)
+                }
+
+                // 人物フィルター
+                Section {
+                    NavigationLink {
+                        PersonManagementView()
+                    } label: {
+                        Label(lm.s("人物管理", "People"), systemImage: "person.2.fill")
+                    }
+                } header: {
+                    Text(lm.s("人物フィルター", "Person Filter"))
                 }
 
                 // AI選定基準
@@ -954,6 +1520,13 @@ struct SettingsView: View {
                     Text(lm.notes)
                 }
 
+                // 開発者を応援
+                Section {
+                    TipJarSectionView(tipStore: tipStore)
+                } header: {
+                    Text(lm.tipJarTitle)
+                }
+
                 // クレジット
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
@@ -971,12 +1544,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle(lm.settings)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(lm.close) { dismiss() }
-                }
-            }
+            .navigationBarTitleDisplayMode(.large)
         }
     }
 
@@ -1022,6 +1590,305 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - TipJarSectionView
+
+struct TipJarSectionView: View {
+    @ObservedObject var tipStore: TipStore
+    @ObservedObject private var lm = LanguageManager.shared
+    @State private var showingThanks = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // 説明文
+            HStack(alignment: .top, spacing: 12) {
+                Text("☕️")
+                    .font(.title2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(lm.tipJarDesc)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            // 商品ロード中 / 取得失敗
+            if tipStore.products.isEmpty {
+                HStack {
+                    Spacer()
+                    if tipStore.isLoading || !tipStore.hasLoaded {
+                        ProgressView()
+                    } else {
+                        Text(lm.s("現在ご利用いただけません", "Not available right now"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+            } else {
+                // チップボタン
+                HStack(spacing: 10) {
+                    ForEach(tipStore.products) { product in
+                        TipButton(product: product, tipStore: tipStore)
+                    }
+                }
+            }
+
+            // 購入中インジケーター
+            if tipStore.purchaseState == .purchasing {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .padding(.vertical, 4)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .onAppear {
+            if tipStore.products.isEmpty && !tipStore.hasLoaded && !tipStore.isLoading {
+                Task { await tipStore.loadProducts() }
+            }
+        }
+        .onChange(of: tipStore.purchaseState) { _, state in
+            if state == .success { showingThanks = true }
+        }
+        .alert(lm.tipThanksTitle, isPresented: $showingThanks) {
+            Button(lm.close, role: .cancel) {
+                tipStore.purchaseState = .idle
+            }
+        } message: {
+            Text(lm.tipThanksMessage)
+        }
+    }
+}
+
+struct TipButton: View {
+    let product: Product
+    @ObservedObject var tipStore: TipStore
+    private var isPurchasing: Bool { tipStore.purchaseState == .purchasing }
+
+    var body: some View {
+        Button {
+            Task { await tipStore.purchase(product) }
+        } label: {
+            VStack(spacing: 4) {
+                Text(product.displayName)
+                    .font(.caption.bold())
+                Text(product.displayPrice)
+                    .font(.subheadline.bold())
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(Color.accent.opacity(0.12))
+            .foregroundStyle(Color.accent)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.accent.opacity(0.3), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isPurchasing)
+    }
+}
+
+// MARK: - PhotoActionsSheet
+
+struct PhotoActionsSheet: View {
+    let asset: PHAsset
+    @ObservedObject private var favoritesStore = FavoritesStore.shared
+    @ObservedObject private var personRegistry = PersonRegistry.shared
+    @ObservedObject private var tagRegistry = TagRegistry.shared
+    @EnvironmentObject private var lm: LanguageManager
+    @State private var showAddPersonField = false
+    @State private var newPersonName = ""
+    @State private var showAddTagField = false
+    @State private var newTagName = ""
+    @State private var newTagColorIndex = 0
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // お気に入り
+                Section(lm.s("お気に入り", "Favorites")) {
+                    let isFav = favoritesStore.isFavorite(asset.localIdentifier)
+                    Button {
+                        Task { await favoritesStore.toggle(asset: asset) }
+                    } label: {
+                        HStack {
+                            Label(
+                                isFav
+                                    ? lm.s("お気に入り解除", "Remove from Favorites")
+                                    : lm.s("お気に入りに追加", "Add to Favorites"),
+                                systemImage: isFav ? "heart.fill" : "heart"
+                            )
+                            .foregroundStyle(isFav ? Color.pink : .primary)
+                            Spacer()
+                            if isFav {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.pink)
+                                    .bold()
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // 人物タグ
+                if !personRegistry.persons.isEmpty {
+                    Section(lm.s("人物タグ", "Tag Person")) {
+                        ForEach(personRegistry.persons) { person in
+                            let isTagged = personRegistry.isTagged(
+                                assetID: asset.localIdentifier,
+                                personID: person.id
+                            )
+                            Button {
+                                if isTagged {
+                                    personRegistry.untagPhoto(assetID: asset.localIdentifier, personID: person.id)
+                                } else {
+                                    personRegistry.tagPhoto(assetID: asset.localIdentifier, personID: person.id)
+                                }
+                            } label: {
+                                HStack {
+                                    Label(person.name, systemImage: "person.fill")
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if isTagged {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(Color.accent)
+                                            .bold()
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                // 人物新規登録
+                Section {
+                    if showAddPersonField {
+                        HStack {
+                            TextField(lm.s("名前を入力", "Enter name"), text: $newPersonName)
+                            Button(lm.s("追加", "Add")) {
+                                let name = newPersonName.trimmingCharacters(in: .whitespaces)
+                                if !name.isEmpty {
+                                    let person = personRegistry.addPerson(name: name)
+                                    personRegistry.tagPhoto(assetID: asset.localIdentifier, personID: person.id)
+                                }
+                                newPersonName = ""
+                                showAddPersonField = false
+                            }
+                            .disabled(newPersonName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    } else {
+                        Button {
+                            showAddPersonField = true
+                        } label: {
+                            Label(lm.s("新しい人物を登録", "Register New Person"), systemImage: "person.badge.plus")
+                                .foregroundStyle(Color.accent)
+                        }
+                    }
+                } header: {
+                    Text(lm.s("人物登録", "Add Person"))
+                }
+
+                // タグ
+                if !tagRegistry.tags.isEmpty {
+                    Section(lm.s("タグ", "Tags")) {
+                        ForEach(tagRegistry.tags) { tag in
+                            let isTagged = tagRegistry.isTagged(
+                                assetID: asset.localIdentifier,
+                                tagID: tag.id
+                            )
+                            Button {
+                                if isTagged {
+                                    tagRegistry.untagPhoto(assetID: asset.localIdentifier, tagID: tag.id)
+                                } else {
+                                    tagRegistry.tagPhoto(assetID: asset.localIdentifier, tagID: tag.id)
+                                }
+                            } label: {
+                                HStack {
+                                    Circle()
+                                        .fill(Color.tagColor(tag.colorIndex))
+                                        .frame(width: 10, height: 10)
+                                    Text(tag.name)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if isTagged {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(Color.accent)
+                                            .bold()
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                // タグ新規作成
+                Section {
+                    if showAddTagField {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField(lm.s("タグ名を入力", "Enter tag name"), text: $newTagName)
+                            HStack(spacing: 8) {
+                                Text(lm.s("色:", "Color:"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                ForEach(0..<6, id: \.self) { i in
+                                    Circle()
+                                        .fill(Color.tagColor(i))
+                                        .frame(width: 22, height: 22)
+                                        .overlay(
+                                            Circle()
+                                                .stroke(Color.primary, lineWidth: newTagColorIndex == i ? 2 : 0)
+                                        )
+                                        .onTapGesture { newTagColorIndex = i }
+                                }
+                            }
+                            Button(lm.s("作成", "Create")) {
+                                let name = newTagName.trimmingCharacters(in: .whitespaces)
+                                if !name.isEmpty {
+                                    let tag = tagRegistry.addTag(name: name, colorIndex: newTagColorIndex)
+                                    tagRegistry.tagPhoto(assetID: asset.localIdentifier, tagID: tag.id)
+                                }
+                                newTagName = ""
+                                newTagColorIndex = 0
+                                showAddTagField = false
+                            }
+                            .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .font(.body.bold())
+                            .foregroundStyle(Color.accent)
+                        }
+                        .padding(.vertical, 4)
+                    } else {
+                        Button {
+                            showAddTagField = true
+                        } label: {
+                            Label(lm.s("新しいタグを作成", "Create New Tag"), systemImage: "tag.fill")
+                                .foregroundStyle(Color.accent)
+                        }
+                    }
+                } header: {
+                    Text(lm.s("タグ追加", "Add Tag"))
+                }
+            }
+            .navigationTitle(lm.s("写真アクション", "Photo Actions"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(lm.s("完了", "Done")) { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
 // MARK: - SliderSelector
 
 struct SliderSelector: View {
@@ -1060,7 +1927,7 @@ struct SliderSelector: View {
 
                 Slider(value: $sliderValue, in: Double(minVal)...Double(maxVal), step: 1)
                     .tint(Color.accent)
-                    .onChange(of: sliderValue) { newVal in
+                    .onChange(of: sliderValue) { _, newVal in
                         let clamped = min(max(Int(newVal), minVal), maxVal)
                         if clamped != value { value = clamped }
                     }
@@ -1072,7 +1939,7 @@ struct SliderSelector: View {
         }
         .padding(.vertical, 4)
         .onAppear { sliderValue = Double(value) }
-        .onChange(of: value) { sliderValue = Double($0) }
+        .onChange(of: value) { _, newVal in sliderValue = Double(newVal) }
         .onChange(of: maxVal) {
             if value > maxVal { value = maxVal }
         }
@@ -1102,6 +1969,51 @@ struct AssetThumbnailView: View {
         .clipped()
         .task {
             image = await PhotoLibraryManager.shared.loadImage(for: asset, targetSize: size)
+        }
+    }
+}
+
+// MARK: - LibraryLoadingView
+
+struct LibraryLoadingView: View {
+    @ObservedObject private var lm = LanguageManager.shared
+    @State private var dotCount = 0
+    private let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.22, green: 0.19, blue: 0.64),
+                         Color(red: 0.39, green: 0.40, blue: 0.95)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 32) {
+                Image(systemName: "photo.stack.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.pulse)
+
+                Text("Snap Sort")
+                    .font(.largeTitle.bold())
+                    .foregroundStyle(.white)
+
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(1.2)
+
+                    Text(lm.s("写真を読み込み中", "Loading photos") + String(repeating: ".", count: dotCount + 1))
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
+                        .animation(.none, value: dotCount)
+                }
+            }
+        }
+        .onReceive(timer) { _ in
+            dotCount = (dotCount + 1) % 3
         }
     }
 }

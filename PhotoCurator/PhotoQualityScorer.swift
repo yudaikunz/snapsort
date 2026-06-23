@@ -5,7 +5,7 @@ import UIKit
 
 // MARK: - PhotoQualityScore
 
-struct PhotoQualityScore {
+struct PhotoQualityScore: @unchecked Sendable {
     let asset: PHAsset
     let sharpness: Double        // 0–1  (higher = sharper)
     let exposure: Double         // 0–1  (closer to 1 = well exposed)
@@ -13,7 +13,7 @@ struct PhotoQualityScore {
     let hasFace: Bool
     let eyesOpen: Double         // 0–1  (1 = eyes open, 0 = eyes closed; 1 if no face)
 
-    var total: Double {
+    nonisolated var total: Double {
         let faceWeight: Double = hasFace ? 0.4 : 0.0
         let baseWeight: Double = hasFace ? 0.6 : 1.0
         let base = baseWeight * (sharpness * 0.6 + exposure * 0.4) + faceWeight * faceQuality
@@ -22,8 +22,7 @@ struct PhotoQualityScore {
         return max(0, base - eyePenalty)
     }
 
-    var recommendationReasons: [String] {
-        let lm = LanguageManager.shared
+    func recommendationReasons(lm: LanguageManager) -> [String] {
         var reasons: [String] = []
         if sharpness > 0.6  { reasons.append(lm.s("鮮明", "Sharp")) }
         if exposure > 0.65  { reasons.append(lm.s("露出良好", "Good Exposure")) }
@@ -39,6 +38,11 @@ struct PhotoQualityScore {
 
 actor PhotoQualityScorer {
 
+    // 同時にスコアリングする枚数の上限（メモリ保護）。
+    // 各スコアリングは画像読み込み + 複数のVision/CPUタスクを伴うため、
+    // 無制限に並列化すると大きなグループでメモリが枯渇する。
+    private let maxConcurrentScores = 4
+
     // MARK: - Public API
 
     /// Score all assets in a group and return them sorted best-first.
@@ -46,11 +50,19 @@ actor PhotoQualityScorer {
         var scores: [PhotoQualityScore] = []
 
         await withTaskGroup(of: PhotoQualityScore?.self) { group in
-            for asset in assets {
+            var nextIndex = 0
+            let prime = min(maxConcurrentScores, assets.count)
+            for _ in 0..<prime {
+                let asset = assets[nextIndex]; nextIndex += 1
                 group.addTask { await self.score(asset) }
             }
+
             for await result in group {
                 if let s = result { scores.append(s) }
+                if nextIndex < assets.count {
+                    let asset = assets[nextIndex]; nextIndex += 1
+                    group.addTask { await self.score(asset) }
+                }
             }
         }
 
@@ -93,12 +105,19 @@ actor PhotoQualityScorer {
             options.isSynchronous = false
             options.isNetworkAccessAllowed = true
 
+            // PHImageManager は iCloud 写真などでハンドラを複数回呼ぶことがある。
+            // 継続を2回 resume するとクラッシュするため、中間（劣化）結果を無視し
+            // 最終結果で一度だけ resume する。
+            var resumed = false
             PHImageManager.default().requestImage(
                 for: asset,
                 targetSize: CGSize(width: 512, height: 512),
                 contentMode: .aspectFit,
                 options: options
-            ) { image, _ in
+            ) { image, info in
+                if let degraded = info?[PHImageResultIsDegradedKey] as? Bool, degraded { return }
+                guard !resumed else { return }
+                resumed = true
                 continuation.resume(returning: image?.cgImage)
             }
         }
