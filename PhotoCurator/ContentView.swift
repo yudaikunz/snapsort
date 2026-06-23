@@ -293,6 +293,7 @@ struct HomeView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .onAppear { favoritesStore.syncFromAssets(library.allAssets) }
+        .task { await viewModel.loadCachedResults() }
         .confirmationDialog(
             tagPendingDelete.map { lm.s("タグ「\($0.name)」を削除しますか？", "Delete tag “\($0.name)”?") } ?? "",
             isPresented: Binding(
@@ -737,6 +738,17 @@ struct HomeView: View {
             .background(Color.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+
+            if let date = viewModel.lastAnalysisDate {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption2)
+                    Text(lm.s("前回の分析: ", "Last analyzed: ") + date.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             GroupListView(viewModel: viewModel)
         }
