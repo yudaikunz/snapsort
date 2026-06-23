@@ -129,18 +129,22 @@ struct SwipeSortView: View {
 
     private var cardStack: some View {
         ZStack {
-            // 背景カード（次の1枚）
+            // 背景カード（次の1枚）。固有IDで identity を固定し、
+            // 手前に繰り上がったときに読み込み済み画像をそのまま再利用する。
             if index + 1 < deck.count {
                 cardFace(deck[index + 1])
                     .scaleEffect(0.94)
                     .offset(y: 12)
+                    .id(deck[index + 1].id)
             }
             // 手前のカード
             if let c = current {
                 cardFace(c)
+                    .id(c.id)
+                    .overlay(borderHighlight)
+                    .overlay(decisionBadge)
                     .offset(x: drag.width, y: drag.height)
                     .rotationEffect(.degrees(Double(drag.width / 18)))
-                    .overlay(decisionLabels)
                     .gesture(
                         DragGesture()
                             .onChanged { drag = $0.translation }
@@ -168,26 +172,59 @@ struct SwipeSortView: View {
             .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color.primary.opacity(0.08)))
     }
 
-    private var decisionLabels: some View {
-        ZStack {
-            badge(text: lm.s("残す", "KEEP"), color: Color.keepGreen, rotation: -12, alignment: .topLeading)
-                .opacity(Double(max(0, drag.width) / hThreshold))
-            badge(text: lm.s("削除", "DELETE"), color: Color.deleteRed, rotation: 12, alignment: .topTrailing)
-                .opacity(Double(max(0, -drag.width) / hThreshold))
-            badge(text: lm.s("お気に入り", "FAVORITE"), color: .orange, rotation: 0, alignment: .top)
-                .opacity(Double(max(0, -drag.height) / vThreshold))
-        }
-        .padding(18)
+    /// ドラッグの向きから判定方向を求める（しきい値手前から表示）
+    private var dragDecision: SwipeDecision? {
+        if drag.height < -40 && abs(drag.height) > abs(drag.width) { return .favorite }
+        if drag.width > 40 { return .keep }
+        if drag.width < -40 { return .delete }
+        return nil
     }
 
-    private func badge(text: String, color: Color, rotation: Double, alignment: Alignment) -> some View {
-        Text(text)
-            .font(.title.bold())
-            .foregroundStyle(color)
-            .padding(.horizontal, 14).padding(.vertical, 6)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(color, lineWidth: 3))
-            .rotationEffect(.degrees(rotation))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+    /// 判定方向に対する進捗（0〜1）。しきい値に近づくほど 1。
+    private var dragProgress: Double {
+        switch dragDecision {
+        case .keep, .delete: return Double(min(1, abs(drag.width) / hThreshold))
+        case .favorite:      return Double(min(1, abs(drag.height) / vThreshold))
+        case .none:          return 0
+        }
+    }
+
+    private func badgeStyle(for d: SwipeDecision)
+        -> (text: String, icon: String, color: Color, alignment: Alignment) {
+        switch d {
+        case .keep:     return (lm.s("残す", "KEEP"), "checkmark", Color.keepGreen, .topLeading)
+        case .delete:   return (lm.s("削除", "DELETE"), "trash", Color.deleteRed, .topTrailing)
+        case .favorite: return (lm.s("お気に入り", "FAVORITE"), "star.fill", .orange, .top)
+        }
+    }
+
+    /// スワイプ方向に応じた、はっきりした色付きバッジ（1つだけ表示）
+    @ViewBuilder private var decisionBadge: some View {
+        if let d = dragDecision {
+            let style = badgeStyle(for: d)
+            Label(style.text, systemImage: style.icon)
+                .font(.title3.bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(style.color, in: Capsule())
+                .shadow(color: style.color.opacity(0.4), radius: 8, y: 2)
+                .opacity(min(1, dragProgress * 1.6))
+                .scaleEffect(0.85 + 0.15 * dragProgress)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: style.alignment)
+                .padding(24)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// スワイプ方向の色でカード枠をハイライト
+    @ViewBuilder private var borderHighlight: some View {
+        if let d = dragDecision {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(badgeStyle(for: d).color, lineWidth: 4)
+                .opacity(dragProgress)
+                .allowsHitTesting(false)
+        }
     }
 
     // MARK: Buttons & hints
@@ -350,7 +387,8 @@ private struct SwipeCardImage: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
         }
-        .task {
+        .task(id: asset.localIdentifier) {
+            image = nil
             image = await PhotoLibraryManager.shared.loadImage(
                 for: asset, targetSize: CGSize(width: 1000, height: 1000))
         }
