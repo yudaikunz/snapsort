@@ -26,6 +26,8 @@ struct SwipeSortView: View {
     @State private var decisions: [String: SwipeDecision] = [:]
     @State private var drag: CGSize = .zero
     @State private var isApplying = false
+    @State private var zoomItem: ZoomItem?      // カードタップでの拡大（閲覧のみ）
+    @State private var showOverview = false      // グループ一覧（選び直し）
 
     private let hThreshold: CGFloat = 100
     private let vThreshold: CGFloat = 120
@@ -54,6 +56,23 @@ struct SwipeSortView: View {
             }
         }
         .onAppear(perform: buildDeck)
+        .fullScreenCover(item: $zoomItem) { item in
+            ZoomableImageView(asset: item.asset, decision: nil, lm: lm,
+                              onSet: nil, onClose: { zoomItem = nil })
+        }
+        .sheet(isPresented: $showOverview) {
+            if let gi = current?.groupIndex, viewModel.groups.indices.contains(gi) {
+                let group = viewModel.groups[gi]
+                GroupOverviewSheet(
+                    assets: group.assets,
+                    bestID: group.assets[group.bestAssetIndex].localIdentifier,
+                    decisions: decisions,
+                    lm: lm,
+                    setDecision: { id, d in decisions[id] = d },
+                    onClose: { showOverview = false }
+                )
+            }
+        }
     }
 
     // MARK: Deck
@@ -113,15 +132,25 @@ struct SwipeSortView: View {
 
             Spacer()
 
-            Button { undo() } label: {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.body.bold())
-                    .frame(width: 36, height: 36)
-                    .background(Color(.secondarySystemBackground), in: Circle())
+            HStack(spacing: 8) {
+                Button { showOverview = true } label: {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.body.bold())
+                        .frame(width: 36, height: 36)
+                        .background(Color(.secondarySystemBackground), in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button { undo() } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.body.bold())
+                        .frame(width: 36, height: 36)
+                        .background(Color(.secondarySystemBackground), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(index == 0)
+                .opacity(index == 0 ? 0.4 : 1)
             }
-            .buttonStyle(.plain)
-            .disabled(index == 0)
-            .opacity(index == 0 ? 0.4 : 1)
         }
     }
 
@@ -143,6 +172,15 @@ struct SwipeSortView: View {
                     .id(c.id)
                     .overlay(borderHighlight)
                     .overlay(decisionBadge)
+                    .overlay(alignment: .topTrailing) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                            .padding(8)
+                            .background(.black.opacity(0.35), in: Circle())
+                            .padding(12)
+                            .allowsHitTesting(false)
+                    }
                     .offset(x: drag.width, y: drag.height)
                     .rotationEffect(.degrees(Double(drag.width / 18)))
                     .gesture(
@@ -150,6 +188,9 @@ struct SwipeSortView: View {
                             .onChanged { drag = $0.translation }
                             .onEnded { onDragEnded($0.translation) }
                     )
+                    .onTapGesture {
+                        zoomItem = ZoomItem(id: c.asset.localIdentifier, asset: c.asset)
+                    }
             }
         }
         .frame(maxWidth: .infinity)
@@ -391,6 +432,236 @@ private struct SwipeCardImage: View {
             image = nil
             image = await PhotoLibraryManager.shared.loadImage(
                 for: asset, targetSize: CGSize(width: 1000, height: 1000))
+        }
+    }
+}
+
+// MARK: - ZoomItem
+
+struct ZoomItem: Identifiable {
+    let id: String          // asset.localIdentifier
+    let asset: PHAsset
+}
+
+// MARK: - ZoomableImageView
+//
+// 写真をフルスクリーンで拡大表示。ピンチ／ダブルタップでズーム。
+// onSet を渡すと下部に判定ボタン（削除／お気に入り／残す）を表示する。
+
+struct ZoomableImageView: View {
+    let asset: PHAsset
+    let decision: SwipeDecision?
+    let lm: LanguageManager
+    var onSet: ((SwipeDecision) -> Void)?
+    var onClose: () -> Void
+
+    @State private var image: UIImage?
+    @State private var scale: CGFloat = 1
+    @GestureState private var pinch: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @GestureState private var dragTranslation: CGSize = .zero
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale * pinch)
+                    .offset(x: offset.width + dragTranslation.width,
+                            y: offset.height + dragTranslation.height)
+                    .gesture(
+                        MagnificationGesture()
+                            .updating($pinch) { value, state, _ in state = value }
+                            .onEnded { value in
+                                scale = min(max(scale * value, 1), 5)
+                                if scale == 1 { offset = .zero }
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture()
+                            .updating($dragTranslation) { value, state, _ in
+                                if scale > 1 { state = value.translation }
+                            }
+                            .onEnded { value in
+                                if scale > 1 {
+                                    offset.width += value.translation.width
+                                    offset.height += value.translation.height
+                                }
+                            }
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.spring(response: 0.3)) {
+                            if scale > 1 { scale = 1; offset = .zero } else { scale = 2.5 }
+                        }
+                    }
+            } else {
+                ProgressView().tint(.white)
+            }
+
+            VStack {
+                HStack {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.title3.bold())
+                            .foregroundStyle(.white)
+                            .padding(12)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    Spacer()
+                }
+                Spacer()
+                if onSet != nil {
+                    HStack(spacing: 28) {
+                        zoomDecisionButton(.delete, "trash", Color.deleteRed)
+                        zoomDecisionButton(.favorite, "star.fill", .orange)
+                        zoomDecisionButton(.keep, "checkmark", Color.keepGreen)
+                    }
+                    .padding(.bottom, 24)
+                }
+            }
+            .padding()
+        }
+        .task(id: asset.localIdentifier) {
+            image = await PhotoLibraryManager.shared.loadImage(
+                for: asset, targetSize: CGSize(width: 2200, height: 2200))
+        }
+    }
+
+    private func zoomDecisionButton(_ d: SwipeDecision, _ icon: String, _ color: Color) -> some View {
+        Button { onSet?(d) } label: {
+            Image(systemName: icon)
+                .font(.title2.bold())
+                .foregroundStyle(decision == d ? .white : color)
+                .frame(width: 58, height: 58)
+                .background(decision == d ? color : Color.white.opacity(0.18), in: Circle())
+                .overlay(Circle().stroke(color, lineWidth: decision == d ? 0 : 1.5))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - GroupOverviewSheet
+//
+// 現在のグループの写真を一覧表示。各写真に現在の判定バッジと AI推薦 を表示し、
+// タップで拡大＋判定の変更（選び直し）ができる。
+
+struct GroupOverviewSheet: View {
+    let assets: [PHAsset]
+    let bestID: String
+    let decisions: [String: SwipeDecision]
+    let lm: LanguageManager
+    var setDecision: (String, SwipeDecision) -> Void
+    var onClose: () -> Void
+
+    @State private var zoomItem: ZoomItem?
+
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(assets, id: \.localIdentifier) { asset in
+                        Button {
+                            zoomItem = ZoomItem(id: asset.localIdentifier, asset: asset)
+                        } label: {
+                            OverviewThumb(
+                                asset: asset,
+                                isBest: asset.localIdentifier == bestID,
+                                decision: decisions[asset.localIdentifier]
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle(lm.s("グループ一覧", "Group"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(lm.s("完了", "Done"), action: onClose)
+                }
+            }
+            .fullScreenCover(item: $zoomItem) { item in
+                ZoomableImageView(
+                    asset: item.asset,
+                    decision: decisions[item.id],
+                    lm: lm,
+                    onSet: { d in setDecision(item.id, d); zoomItem = nil },
+                    onClose: { zoomItem = nil }
+                )
+            }
+        }
+    }
+}
+
+// MARK: - OverviewThumb
+
+private struct OverviewThumb: View {
+    let asset: PHAsset
+    let isBest: Bool
+    let decision: SwipeDecision?
+    @State private var image: UIImage?
+
+    private var decisionColor: Color {
+        switch decision {
+        case .keep:     return Color.keepGreen
+        case .delete:   return Color.deleteRed
+        case .favorite: return .orange
+        case .none:     return .clear
+        }
+    }
+
+    private var decisionIcon: String? {
+        switch decision {
+        case .keep:     return "checkmark"
+        case .delete:   return "trash"
+        case .favorite: return "star.fill"
+        case .none:     return nil
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.secondarySystemBackground)
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            }
+        }
+        .frame(height: 130)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(alignment: .topLeading) {
+            if isBest {
+                Image(systemName: "sparkles")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(5)
+                    .background(Color.accent, in: Circle())
+                    .padding(5)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let icon = decisionIcon {
+                Image(systemName: icon)
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(5)
+                    .background(decisionColor, in: Circle())
+                    .padding(5)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(decisionColor, lineWidth: decision == nil ? 0 : 3)
+        )
+        .task(id: asset.localIdentifier) {
+            image = await PhotoLibraryManager.shared.loadImage(
+                for: asset, targetSize: CGSize(width: 320, height: 320))
         }
     }
 }
