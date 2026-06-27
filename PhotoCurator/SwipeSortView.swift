@@ -26,8 +26,13 @@ struct SwipeSortView: View {
     @State private var decisions: [String: SwipeDecision] = [:]
     @State private var drag: CGSize = .zero
     @State private var isApplying = false
-    @State private var zoomItem: ZoomItem?      // カードタップでの拡大（閲覧のみ）
+    @State private var zoomItem: ZoomItem?      // フルスクリーン拡大（閲覧のみ）
     @State private var showOverview = false      // グループ一覧（選び直し）
+    // カード上でのその場ズーム
+    @State private var cardScale: CGFloat = 1
+    @State private var cardLastScale: CGFloat = 1
+    @State private var cardPan: CGSize = .zero
+    @State private var cardLastPan: CGSize = .zero
 
     private let hThreshold: CGFloat = 100
     private let vThreshold: CGFloat = 120
@@ -168,36 +173,67 @@ struct SwipeSortView: View {
             }
             // 手前のカード
             if let c = current {
-                cardFace(c)
+                cardFace(c, scale: cardScale, pan: cardPan)
                     .id(c.id)
                     .overlay(borderHighlight)
                     .overlay(decisionBadge)
                     .overlay(alignment: .topTrailing) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.caption.bold())
-                            .foregroundStyle(.white)
-                            .padding(8)
-                            .background(.black.opacity(0.35), in: Circle())
-                            .padding(12)
-                            .allowsHitTesting(false)
+                        Button {
+                            resetCardZoom()
+                            zoomItem = ZoomItem(id: c.asset.localIdentifier, asset: c.asset)
+                        } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                                .padding(8)
+                                .background(.black.opacity(0.35), in: Circle())
+                                .padding(12)
+                        }
+                        .buttonStyle(.plain)
                     }
                     .offset(x: drag.width, y: drag.height)
                     .rotationEffect(.degrees(Double(drag.width / 18)))
                     .gesture(
                         DragGesture()
-                            .onChanged { drag = $0.translation }
-                            .onEnded { onDragEnded($0.translation) }
+                            .onChanged { value in
+                                if cardScale > 1.01 {
+                                    cardPan = CGSize(width: cardLastPan.width + value.translation.width,
+                                                     height: cardLastPan.height + value.translation.height)
+                                } else {
+                                    drag = value.translation
+                                }
+                            }
+                            .onEnded { value in
+                                if cardScale > 1.01 {
+                                    cardLastPan = cardPan
+                                } else {
+                                    onDragEnded(value.translation)
+                                }
+                            }
                     )
-                    .onTapGesture {
-                        zoomItem = ZoomItem(id: c.asset.localIdentifier, asset: c.asset)
+                    .simultaneousGesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                cardScale = min(max(cardLastScale * value, 1), 4)
+                            }
+                            .onEnded { _ in
+                                cardLastScale = cardScale
+                                if cardScale <= 1.01 { resetCardZoom() }
+                            }
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.spring(response: 0.3)) {
+                            if cardScale > 1.01 { resetCardZoom() }
+                            else { cardScale = 2.5; cardLastScale = 2.5 }
+                        }
                     }
             }
         }
         .frame(maxWidth: .infinity)
     }
 
-    private func cardFace(_ card: SwipeCard) -> some View {
-        SwipeCardImage(asset: card.asset)
+    private func cardFace(_ card: SwipeCard, scale: CGFloat = 1, pan: CGSize = .zero) -> some View {
+        SwipeCardImage(asset: card.asset, zoomScale: scale, zoomPan: pan)
             .aspectRatio(3.0/4.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .overlay(alignment: .topLeading) {
@@ -381,7 +417,12 @@ struct SwipeSortView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
             index += 1
             drag = .zero
+            resetCardZoom()
         }
+    }
+
+    private func resetCardZoom() {
+        cardScale = 1; cardLastScale = 1; cardPan = .zero; cardLastPan = .zero
     }
 
     private func defaultExit(for decision: SwipeDecision) -> CGSize {
@@ -397,6 +438,7 @@ struct SwipeSortView: View {
         index -= 1
         decisions[deck[index].asset.localIdentifier] = nil
         drag = .zero
+        resetCardZoom()
     }
 
     private func apply() async {
@@ -411,27 +453,32 @@ struct SwipeSortView: View {
 
 private struct SwipeCardImage: View {
     let asset: PHAsset
+    var zoomScale: CGFloat = 1
+    var zoomPan: CGSize = .zero
     @State private var image: UIImage?
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color(.secondarySystemBackground)
+                Color.black
                 if let image {
+                    // 写真全体が見えるよう fit 表示。ズーム時はスケール＋パン。
                     Image(uiImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .scaledToFit()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .scaleEffect(zoomScale)
+                        .offset(zoomPan)
                 } else {
                     ProgressView()
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .clipped()
         }
         .task(id: asset.localIdentifier) {
             image = nil
             image = await PhotoLibraryManager.shared.loadImage(
-                for: asset, targetSize: CGSize(width: 1000, height: 1000))
+                for: asset, targetSize: CGSize(width: 1600, height: 1600))
         }
     }
 }
