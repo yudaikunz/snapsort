@@ -5,3 +5,4 @@ DerivedData/
 .build/
 *.swiftpm
 .DS_Store
+.claude/
